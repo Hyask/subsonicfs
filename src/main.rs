@@ -42,6 +42,25 @@ impl Artist {
     fn get_ino(&self) -> u64 {
         self.id as u64 | ARTIST_ID
     }
+
+    fn get_attr(&self) -> FileAttr {
+        FileAttr {
+            ino: self.get_ino(),
+            size: 0,
+            blocks: 0,
+            atime: CREATE_TIME,
+            mtime: CREATE_TIME,
+            ctime: CREATE_TIME,
+            crtime: CREATE_TIME,
+            kind: FileType::Directory,
+            perm: 0o755,
+            nlink: 2,
+            uid: 501,
+            gid: 20,
+            rdev: 0,
+            flags: 0,
+        }
+    }
 }
 
 fn get_dir_attr(ino: u64) -> FileAttr {
@@ -118,16 +137,28 @@ impl<'subfs> SubsonicFS<'subfs> {
             Artist::new_from_id(&self.client, 1), // Lordi
         ]
     }
+
+    fn get_artist_by_name(&self, name: &str) -> Option<Artist> {
+        if name == "Lordi" {
+            return Some(Artist::new_from_id(&self.client, 1));
+        }
+        return None;
+    }
 }
 
 impl<'subfs> Filesystem for SubsonicFS<'subfs> {
     fn lookup(&mut self, _req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
-        println!("name: {:#?}", name);
         if parent == 1 {
             match name.to_str() {
                 Some("hello.txt") => reply.entry(&TTL, &SUBFS_TXT_ATTR, 0),
                 Some("Artists") => reply.entry(&TTL, &get_dir_attr(ARTIST_ID), 0),
                 Some("Albums") => reply.entry(&TTL, &get_dir_attr(ALBUM_ID), 0),
+                _ => reply.error(ENOENT),
+            }
+        } else if parent == ARTIST_ID {
+            let a = self.get_artist_by_name(&name.to_str().unwrap());
+            match a {
+                Some(artist) => reply.entry(&TTL, &artist.get_attr(), 0),
                 _ => reply.error(ENOENT),
             }
         } else {
@@ -136,14 +167,13 @@ impl<'subfs> Filesystem for SubsonicFS<'subfs> {
     }
 
     fn getattr(&mut self, _req: &Request, ino: u64, reply: ReplyAttr) {
-        match ino {
-            1 => reply.attr(&TTL, &SUBFS_DIR_ATTR),
-            ARTIST_ID => reply.attr(&TTL, &get_dir_attr(ARTIST_ID)),
-            ALBUM_ID => reply.attr(&TTL, &SUBFS_DIR_ATTR),
-            SONG_ID => reply.attr(&TTL, &SUBFS_DIR_ATTR),
-            2 => reply.attr(&TTL, &SUBFS_TXT_ATTR),
-            _ => reply.error(ENOENT),
-        }
+        if ino == 1 { reply.attr(&TTL, &SUBFS_DIR_ATTR) }
+        else if ino == 2 { reply.attr(&TTL, &SUBFS_TXT_ATTR) }
+        else if ino == ARTIST_ID { reply.attr(&TTL, &get_dir_attr(ARTIST_ID)) }
+        else if ino == ALBUM_ID { reply.attr(&TTL, &SUBFS_DIR_ATTR) }
+        else if ino == SONG_ID { reply.attr(&TTL, &SUBFS_DIR_ATTR) }
+        else if ino & ARTIST_ID == ARTIST_ID { reply.attr(&TTL, &get_dir_attr(ino)) }
+        else { reply.error(ENOENT) };
     }
 
     fn read(&mut self, _req: &Request, ino: u64, _fh: u64, offset: i64, _size: u32, reply: ReplyData) {
