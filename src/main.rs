@@ -5,11 +5,12 @@ extern crate time;
 
 use std::env;
 use std::ffi::OsStr;
-use libc::ENOENT;
+use libc::{ENOENT,EOF};
 use time::Timespec;
 use fuse::{FileType, FileAttr, Filesystem, Request, ReplyData, ReplyEntry, ReplyAttr, ReplyDirectory};
 
 extern crate sunk;
+use sunk::Streamable;
 
 const SONG_ID: u64 = 1 << 63;
 const ALBUM_ID: u64 = 1 << 62;
@@ -52,7 +53,7 @@ impl Artist {
             mtime: CREATE_TIME,
             ctime: CREATE_TIME,
             crtime: CREATE_TIME,
-            kind: FileType::Directory,
+            kind: FileType::RegularFile,
             perm: 0o755,
             nlink: 2,
             uid: 501,
@@ -62,6 +63,62 @@ impl Artist {
         }
     }
 }
+
+type Song = sunk::song::Song;
+
+trait SubFSFile {
+    type File;
+    fn get_ino_from_id(id: usize) -> u64;
+    fn get_id_from_ino(ino: u64) -> usize;
+    fn new_from_id(client: & sunk::Client, id: usize) -> Self::File;
+    fn new_from_ino(client: & sunk::Client, ino: u64) -> Self::File;
+    fn get_ino(&self) -> u64;
+    fn get_attr(&self) -> FileAttr;
+}
+
+impl SubFSFile for Song {
+    type File = Song;
+
+    fn get_ino_from_id(id: usize) -> u64 {
+        id as u64 | SONG_ID
+    }
+    fn get_id_from_ino(ino: u64) -> usize {
+        ino as usize & !SONG_ID as usize
+    }
+
+    fn new_from_id(client: & sunk::Client, id: usize) -> Song {
+        Song::get(&client, id as u64).unwrap()
+    }
+
+    fn new_from_ino(client: & sunk::Client, ino: u64) -> Song {
+        let id = Song::get_id_from_ino(ino);
+        Song::new_from_id(&client, id)
+    }
+
+    fn get_ino(&self) -> u64 {
+        Song::get_ino_from_id(self.id as usize)
+    }
+
+    fn get_attr(&self) -> FileAttr {
+        FileAttr {
+            ino: self.get_ino(),
+            size: self.size,
+            blocks: 0,
+            atime: CREATE_TIME,
+            mtime: CREATE_TIME,
+            ctime: CREATE_TIME,
+            crtime: CREATE_TIME,
+            kind: FileType::RegularFile,
+            perm: 0o755,
+            nlink: 2,
+            uid: 501,
+            gid: 20,
+            rdev: 0,
+            flags: 0,
+        }
+    }
+}
+
 
 fn get_dir_attr(ino: u64) -> FileAttr {
     FileAttr {
@@ -118,9 +175,11 @@ const SUBFS_TXT_ATTR: FileAttr = FileAttr {
     flags: 0,
 };
 
+
 struct SubsonicFS<'subfs> {
     pub name: &'subfs str,
     pub client: sunk::Client,
+    pub song: Song,
 }
 
 impl<'subfs> SubsonicFS<'subfs> {
@@ -148,9 +207,14 @@ impl<'subfs> SubsonicFS<'subfs> {
 
 impl<'subfs> Filesystem for SubsonicFS<'subfs> {
     fn lookup(&mut self, _req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
+        println!("lookup");
         if parent == 1 {
             match name.to_str() {
                 Some("hello.txt") => reply.entry(&TTL, &SUBFS_TXT_ATTR, 0),
+                Some("Man Skin Boots") => {
+                    println!("{} ---- {:#?}", &self.song, name);
+                    reply.entry(&TTL, &self.song.get_attr(), 0);
+                },
                 Some("Artists") => reply.entry(&TTL, &get_dir_attr(ARTIST_ID), 0),
                 Some("Albums") => reply.entry(&TTL, &get_dir_attr(ALBUM_ID), 0),
                 _ => reply.error(ENOENT),
@@ -167,8 +231,13 @@ impl<'subfs> Filesystem for SubsonicFS<'subfs> {
     }
 
     fn getattr(&mut self, _req: &Request, ino: u64, reply: ReplyAttr) {
+        println!("getattr");
+        println!("===> {} - {}", ino, self.song.get_ino());
         if ino == 1 { reply.attr(&TTL, &SUBFS_DIR_ATTR) }
         else if ino == 2 { reply.attr(&TTL, &SUBFS_TXT_ATTR) }
+        else if ino == self.song.get_ino() {
+            println!("{}", ino);
+            reply.attr(&TTL, &self.song.get_attr()) }
         else if ino == ARTIST_ID { reply.attr(&TTL, &get_dir_attr(ARTIST_ID)) }
         else if ino == ALBUM_ID { reply.attr(&TTL, &SUBFS_DIR_ATTR) }
         else if ino == SONG_ID { reply.attr(&TTL, &SUBFS_DIR_ATTR) }
@@ -177,14 +246,31 @@ impl<'subfs> Filesystem for SubsonicFS<'subfs> {
     }
 
     fn read(&mut self, _req: &Request, ino: u64, _fh: u64, offset: i64, _size: u32, reply: ReplyData) {
+        println!("read");
         if ino == 2 {
             reply.data(&HELLO_TXT_CONTENT.as_bytes()[offset as usize..]);
+        } else if ino == self.song.get_ino() {
+            println!("{}", self.song);
+            self.song.set_max_bit_rate(128);
+            let size;
+            if offset as usize + _size as usize > self.song.size as usize {
+                size = self.song.size as usize - offset as usize;
+            } else {
+                size = _size as usize;
+            }
+            println!("offset: {}, size: {}, _size: {}, song.size: {}", offset, size, _size, self.song.size);
+            if offset as usize >= self.song.size as usize {
+                reply.error(EOF);
+            } else {
+                reply.data(&self.song.stream(&self.client).unwrap()[offset as usize..offset as usize + size as usize]);
+            }
         } else {
             reply.error(ENOENT);
         }
     }
 
     fn readdir(&mut self, _req: &Request, ino: u64, _fh: u64, offset: i64, mut reply: ReplyDirectory) {
+        println!("readdir");
         let artists = &self.get_artist_list();
         let mut entries;
         match ino {
@@ -196,6 +282,7 @@ impl<'subfs> Filesystem for SubsonicFS<'subfs> {
                     (ALBUM_ID, FileType::Directory, "Albums"),
                     (SONG_ID, FileType::Directory, "Songs"),
                     (2, FileType::RegularFile, "hello.txt"),
+                    (self.song.get_ino(), FileType::RegularFile, &self.song.title),
                 ];
             }
             ARTIST_ID => {
@@ -233,12 +320,17 @@ fn main() {
     let site = "http://localhost/";
     let username = "skia";
     let password = "skia";
+    // let site = "http://demo.subsonic.org/";
+    // let username = "guest4";
+    // let password = "guest";
 
     let client = sunk::Client::new(site, username, password).unwrap();
+    let song = Song::new_from_id(&client, 1);
 
     let fs = SubsonicFS {
         name: "Subsonic FS",
         client: client,
+        song,
     };
 
     // println!("client: {:#?}", client);
