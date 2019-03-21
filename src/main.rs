@@ -13,6 +13,8 @@ use std::collections::HashMap;
 extern crate sunk;
 use sunk::{Artist, Streamable, ListType};
 
+const ARTIST_ID: u64 = 1 << 31;
+
 const TTL: Timespec = Timespec { sec: 1, nsec: 0 };                     // 1 second
 
 const CREATE_TIME: Timespec = Timespec { sec: 1381237736, nsec: 0 };    // 2013-10-08 08:56
@@ -27,8 +29,8 @@ const SUBFS_DIR_ATTR: FileAttr = FileAttr {
     kind: FileType::Directory,
     perm: 0o755,
     nlink: 2,
-    uid: 501,
-    gid: 20,
+    uid: 65534, // nobody
+    gid: 65534, // nobody
     rdev: 0,
     flags: 0,
 };
@@ -45,8 +47,8 @@ const SUBFS_TXT_ATTR: FileAttr = FileAttr {
     kind: FileType::RegularFile,
     perm: 0o644,
     nlink: 1,
-    uid: 501,
-    gid: 20,
+    uid: 65534, // nobody
+    gid: 65534, // nobody
     rdev: 0,
     flags: 0,
 };
@@ -56,7 +58,7 @@ struct SubsonicFS<'subfs> {
     pub name: &'subfs str,
     pub client: sunk::Client,
     pub artists: Vec<Artist>,
-    pub artists_by_name: HashMap<&'subfs str, &'subfs Artist>, // key is the name
+    pub artists_name_to_index: HashMap<String, usize>, // key is the name
     pub artists_by_ino: HashMap<u64, &'subfs Artist>, // key is the inode
 }
 
@@ -66,34 +68,79 @@ impl<'subfs> SubsonicFS<'subfs> {
             name: name,
             client: client,
             artists: Vec::new(),
-            artists_by_name: HashMap::new(),
+            artists_name_to_index: HashMap::new(),
             artists_by_ino: HashMap::new(),
         }
     }
 
     fn add_new_artist(&mut self, artist: Artist) {
-
+        self.artists.push(artist);
+        let name = self.artists.last().unwrap().name.clone();
+        self.artists_name_to_index.insert(name, self.artists.len() - 1);
+        // println!("artist list: {:?}", self.artists);
+        // println!("artist name to index: {:?}", self.artists_name_to_index);
     }
 
     fn build_artist_list(&mut self) {
         let artist_list = sunk::Artist::list(&self.client, sunk::search::ALL).unwrap();
-        print!("{:#?}", artist_list);
         for a in artist_list {
-            self.artists.push(a);
+            self.add_new_artist(a);
         }
-        print!("{:#?}", self.artists);
     }
 
     fn get_artist_list(&self) -> & Vec<Artist> {
         &self.artists
-        //if self.artists.len() < 1 {
-            //self.artists = vec![
-                //Artist::new_from_id(&self.client, &String::from("AR1")), // Lordi
-            //];
-            //self.artists
-        //} else {
-            //self.artists
-        //}
+    }
+
+    fn get_artist_by_name(&self, name: &str) -> Option<&Artist> {
+        println!("name: {}", name);
+        match self.artists_name_to_index.get(name) {
+            Some(&index) => self.artists.get(index),
+            None => None,
+        }
+    }
+
+    pub fn get_artist_ino(&self, artist: &Artist) -> u64 {
+        let ino = ARTIST_ID + 1 + (*self.artists_name_to_index.get(&artist.name).unwrap() as u64);
+        ino
+    }
+
+    pub fn get_artist_attr(&self, artist: &Artist) -> FileAttr {
+        FileAttr {
+            ino: self.get_artist_ino(&artist),
+            size: 0,
+            blocks: 0,
+            atime: CREATE_TIME,
+            mtime: CREATE_TIME,
+            ctime: CREATE_TIME,
+            crtime: CREATE_TIME,
+            kind: FileType::Directory,
+            perm: 0o755,
+            nlink: 2,
+            uid: 65534, // nobody
+            gid: 65534, // nobody
+            rdev: 0,
+            flags: 0,
+        }
+    }
+
+    fn get_dir_attr(&self, ino: u64) -> FileAttr {
+        FileAttr {
+            ino: ino,
+            size: 0,
+            blocks: 0,
+            atime: CREATE_TIME,
+            mtime: CREATE_TIME,
+            ctime: CREATE_TIME,
+            crtime: CREATE_TIME,
+            kind: FileType::Directory,
+            perm: 0o755,
+            nlink: 2,
+            uid: 65534, // nobody
+            gid: 65534, // nobody
+            rdev: 0,
+            flags: 0,
+        }
     }
 }
 
@@ -103,6 +150,14 @@ impl<'subfs> Filesystem for SubsonicFS<'subfs> {
         if parent == 1 {
             match name.to_str() {
                 Some("hello.txt") => reply.entry(&TTL, &SUBFS_TXT_ATTR, 0),
+                Some("Artists") => reply.entry(&TTL, &self.get_dir_attr(ARTIST_ID), 0),
+                _ => reply.error(ENOENT),
+            }
+        } else if parent == ARTIST_ID {
+            let a = self.get_artist_by_name(&name.to_str().unwrap());
+            println!("PLOP: {:?}", a);
+            match a {
+                Some(artist) => reply.entry(&TTL, &self.get_artist_attr(&artist), 0),
                 _ => reply.error(ENOENT),
             }
         } else {
@@ -127,7 +182,7 @@ impl<'subfs> Filesystem for SubsonicFS<'subfs> {
     }
 
     fn readdir(&mut self, _req: &Request, ino: u64, _fh: u64, offset: i64, mut reply: ReplyDirectory) {
-        println!("readdir");
+        println!("readdir: {}", ino);
         let mut entries;
         match ino {
             1 => {
@@ -135,7 +190,19 @@ impl<'subfs> Filesystem for SubsonicFS<'subfs> {
                     (1, FileType::Directory, "."),
                     (1, FileType::Directory, ".."),
                     (2, FileType::RegularFile, "hello.txt"),
+                    (ARTIST_ID, FileType::RegularFile, "Artists"),
                 ];
+            }
+            ARTIST_ID => {
+                entries = vec![
+                    (ARTIST_ID, FileType::Directory, "."),
+                    (1, FileType::Directory, ".."),
+                ];
+                for i in 0..self.get_artist_list().len() {
+                    let a = &self.get_artist_list()[i];
+                    entries.push((self.get_artist_ino(&a), FileType::Directory, &a.name));
+                }
+                println!("entries: {:?}", entries);
             }
             _ => entries = vec![],
         }
@@ -160,7 +227,7 @@ fn main() {
         .map(|o| o.as_ref())
         .collect::<Vec<&OsStr>>();
 
-    let site = "http://127.0.0.1:5000/";
+    let site = "http://127.0.0.1:80/";
     let username = "skia";
     let password = "skia";
     // let site = "http://demo.subsonic.org/";
@@ -173,6 +240,7 @@ fn main() {
     let mut fs = SubsonicFS::new("Subsonic FS", client);
 
     fs.build_artist_list();
+    println!("{:?}", fs.get_artist_list());
 
     // println!("client: {:#?}", client);
     // let an_artist = sunk::Artist::get(&client, 1);
