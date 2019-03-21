@@ -2,10 +2,11 @@
 name = "subsonicfs"
 version = "0.1.0"
 authors = ["Skia <skia@libskia.so>"]
+edition = "2018"
 
 [dependencies]
 fuse = "0.3.1"
-sunk = { git = "https://github.com/Hyask/sunk" }
+sunk = { path = "/home/skia/workspace/sunk/" }
 env_logger = "0.6.0"
 time = "0.1.40"
 libc = "0.2.43"

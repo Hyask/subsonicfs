@@ -11,9 +11,10 @@ use fuse::{FileType, FileAttr, Filesystem, Request, ReplyData, ReplyEntry, Reply
 use std::collections::HashMap;
 
 extern crate sunk;
-use sunk::{Artist, Streamable, ListType};
+use sunk::{Artist, Streamable, ListType, Album};
 
 const ARTIST_ID: u64 = 1 << 31;
+const ALBUM_ID: u64 = 1 << 32;
 
 const TTL: Timespec = Timespec { sec: 1, nsec: 0 };                     // 1 second
 
@@ -59,8 +60,11 @@ struct SubsonicFS<'subfs> {
     pub client: sunk::Client,
     pub artists: Vec<Artist>,
     pub artists_name_to_index: HashMap<String, usize>, // key is the name
-    pub artists_by_ino: HashMap<u64, &'subfs Artist>, // key is the inode
+    pub albums: Vec<Album>,
+    pub albums_name_to_index: HashMap<String, usize>, // key is the name
+    pub artist_ino_to_album_ino_list: HashMap<u64, Vec<u64>>,
 }
+
 
 impl<'subfs> SubsonicFS<'subfs> {
     fn new(name: &str, client: sunk::Client) -> SubsonicFS {
@@ -69,16 +73,35 @@ impl<'subfs> SubsonicFS<'subfs> {
             client: client,
             artists: Vec::new(),
             artists_name_to_index: HashMap::new(),
-            artists_by_ino: HashMap::new(),
+            albums: Vec::new(),
+            albums_name_to_index: HashMap::new(),
+            artist_ino_to_album_ino_list: HashMap::new(),
         }
     }
 
-    fn add_new_artist(&mut self, artist: Artist) {
+    fn add_new_artist(&mut self, mut artist: Artist) {
+        artist.name = artist.name.replace("/", "-");
         self.artists.push(artist);
-        let name = self.artists.last().unwrap().name.clone();
+        let artist = &self.artists.last().unwrap();
+        let name = artist.name.clone();
         self.artists_name_to_index.insert(name, self.artists.len() - 1);
-        // println!("artist list: {:?}", self.artists);
-        // println!("artist name to index: {:?}", self.artists_name_to_index);
+        // TODO
+        // self.build_album_list(artist);
+    }
+
+    fn add_new_album(&mut self, album: Album) {
+        self.albums.push(album);
+        let album = &self.albums.last().unwrap();
+        let name = album.name.clone();
+        self.albums_name_to_index.insert(name, self.albums.len() - 1);
+        // let artist_name = &album.artist.unwrap();
+        // match self.get_artist_by_name(artist_name) {
+        //     Some(artist) => {
+        //         let artist_ino = self.get_artist_ino(artist);
+        //         // self.artist_ino_to_album_ino_list.insert(artist_ino, )
+        //     },
+        //     None => println!("Oops, no artist found for this album: {:#?}", album)
+        // }
     }
 
     fn build_artist_list(&mut self) {
@@ -88,8 +111,23 @@ impl<'subfs> SubsonicFS<'subfs> {
         }
     }
 
+    fn build_album_list(&mut self, artist: &Artist) {
+        let album_list = artist.albums(&self.client).unwrap();
+        for a in album_list {
+            self.add_new_album(a);
+        }
+    }
+
+    fn get_albums_for_artist(&self, artist: &Artist) -> Option<Vec<Album>> {
+        Some(artist.albums(&self.client).unwrap())
+    }
+
     fn get_artist_list(&self) -> & Vec<Artist> {
         &self.artists
+    }
+
+    fn get_album_list(&self) -> & Vec<Album> {
+        &self.albums
     }
 
     fn get_artist_by_name(&self, name: &str) -> Option<&Artist> {
@@ -100,15 +138,34 @@ impl<'subfs> SubsonicFS<'subfs> {
         }
     }
 
+    fn get_artist_by_ino(&self, ino: u64) -> Option<&Artist> {
+        println!("ino: {}", ino);
+        let index = ino - ARTIST_ID - 1;
+        self.artists.get(index as usize)
+    }
+
+    fn get_artist_index(&self, artist: &Artist) -> usize {
+        *self.artists_name_to_index.get(&artist.name).unwrap()
+    }
+
+    fn get_album_index(&self, album: &Album) -> usize {
+        *self.albums_name_to_index.get(&album.name).unwrap()
+    }
+
     pub fn get_artist_ino(&self, artist: &Artist) -> u64 {
-        let ino = ARTIST_ID + 1 + (*self.artists_name_to_index.get(&artist.name).unwrap() as u64);
+        let ino = ARTIST_ID + 1 + self.get_artist_index(artist) as u64;
+        ino
+    }
+
+    pub fn get_album_ino(&self, album: &Album) -> u64 {
+        let ino = ALBUM_ID + 1 + self.get_album_index(album) as u64;
         ino
     }
 
     pub fn get_artist_attr(&self, artist: &Artist) -> FileAttr {
         FileAttr {
             ino: self.get_artist_ino(&artist),
-            size: 0,
+            size: artist.album_count as u64,
             blocks: 0,
             atime: CREATE_TIME,
             mtime: CREATE_TIME,
@@ -202,9 +259,27 @@ impl<'subfs> Filesystem for SubsonicFS<'subfs> {
                     let a = &self.get_artist_list()[i];
                     entries.push((self.get_artist_ino(&a), FileType::Directory, &a.name));
                 }
-                println!("entries: {:?}", entries);
+                // println!("entries: {:?}", entries);
             }
-            _ => entries = vec![],
+            _ => {
+                if (ino & ARTIST_ID) == ARTIST_ID { // This is an artist folder
+                    entries = vec![
+                        (ino, FileType::Directory, "."),
+                        (ARTIST_ID, FileType::Directory, ".."),
+                    ];
+                    let artist = &self.get_artist_by_ino(ino).unwrap();
+                    let albums = &self.get_albums_for_artist(&artist).unwrap();
+                    for al in albums {
+                        println!("album: {:?}", al);
+                        let i = self.get_album_index(&al);
+                        let a = &self.get_album_list()[i];
+
+                        entries.push((self.get_album_ino(&a), FileType::Directory, &a.name));
+                    }
+                } else {
+                    entries = vec![];
+                }
+            }
         }
 
 
@@ -213,6 +288,7 @@ impl<'subfs> Filesystem for SubsonicFS<'subfs> {
         // it.
         let to_skip = if offset == 0 { offset } else { offset + 1 } as usize;
         for (i, entry) in entries.into_iter().enumerate().skip(to_skip) {
+            // println!("entry: {:?}", entry);
             reply.add(entry.0, i as i64, entry.1, entry.2);
         }
         reply.ok();
@@ -227,12 +303,9 @@ fn main() {
         .map(|o| o.as_ref())
         .collect::<Vec<&OsStr>>();
 
-    let site = "http://127.0.0.1:80/";
+    let site = "https://festival.libskia.so";
     let username = "skia";
-    let password = "skia";
-    // let site = "http://demo.subsonic.org/";
-    // let username = "guest4";
-    // let password = "guest";
+    let password = "plop4000";
 
     let client = sunk::Client::new(site, username, password).unwrap();
     //let song = Song::new_from_id(&client, 1);
@@ -241,6 +314,7 @@ fn main() {
 
     fs.build_artist_list();
     println!("{:?}", fs.get_artist_list());
+    println!("{:?}", fs.get_artist_list().len());
 
     // println!("client: {:#?}", client);
     // let an_artist = sunk::Artist::get(&client, 1);
