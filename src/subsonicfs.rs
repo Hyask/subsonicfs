@@ -1,11 +1,12 @@
 
 extern crate fuse;
+extern crate sunk;
 
 use libc::{ENOENT,EOF};
 use time::Timespec;
 use std::collections::HashMap;
 use fuse::{FileType, FileAttr, Filesystem, Request, ReplyData, ReplyEntry, ReplyAttr, ReplyDirectory};
-use sunk::{Artist, Streamable, ListType, Album};
+// use sunk::{Streamable, ListType, Album};
 use std::ffi::OsStr;
 
 // trait SubFSFile {
@@ -58,6 +59,21 @@ const SUBFS_TXT_ATTR: FileAttr = FileAttr {
     flags: 0,
 };
 
+#[derive(Debug)]
+pub struct Artist {
+    pub name: String,
+    pub album_count: usize,
+    pub sonic_artist: sunk::Artist,
+}
+
+impl Artist {
+}
+
+#[derive(Debug)]
+pub struct Album {
+    pub name: String,
+    pub sonic_album: sunk::Album,
+}
 
 pub struct SubsonicFS<'subfs> {
     pub name: &'subfs str,
@@ -112,19 +128,29 @@ impl<'subfs> SubsonicFS<'subfs> {
     fn build_artist_list(&mut self) {
         let artist_list = sunk::Artist::list(&self.client, sunk::search::ALL).unwrap();
         for a in artist_list {
-            self.add_new_artist(a);
+            let artist = Artist {
+                name: a.name.clone(),
+                album_count: a.album_count,
+                sonic_artist: a,
+            };
+            self.add_new_artist(artist);
         }
     }
 
     fn build_album_list(&mut self, artist: &Artist) {
-        let album_list = artist.albums(&self.client).unwrap();
+        let album_list = artist.sonic_artist.albums(&self.client).unwrap();
         for a in album_list {
-            self.add_new_album(a);
+            let album = Album {
+                name: a.name.clone(),
+                sonic_album: a,
+            };
+            self.add_new_album(album);
         }
     }
 
     fn get_albums_for_artist(&self, artist: &Artist) -> Option<Vec<Album>> {
-        Some(artist.albums(&self.client).unwrap())
+        // Some(artist.sonic_artist.albums(&self.client).unwrap())
+        Some(vec![])
     }
 
     fn get_artist_list(&self) -> & Vec<Artist> {
