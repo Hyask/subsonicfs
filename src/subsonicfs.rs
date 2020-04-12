@@ -3,6 +3,8 @@ extern crate fuse;
 extern crate sunk;
 
 use std::rc::Rc;
+use std::cell::RefCell;
+use std::borrow::BorrowMut;
 use libc::{ENOENT,EOF};
 use time::Timespec;
 use std::collections::HashMap;
@@ -52,12 +54,11 @@ const SUBFS_TXT_ATTR: FileAttr = FileAttr {
     flags: 0,
 };
 
-#[derive(Debug)]
+// #[derive(Debug, Clone)]
 pub struct Artist {
     pub name: String,
-    pub album_count: usize,
     pub sonic_artist: sunk::Artist,
-    pub albums: Vec<Rc<Album>>,
+    pub albums: RefCell<Vec<Rc<Album>>>,
 }
 
 impl Artist {
@@ -104,7 +105,8 @@ impl<'subfs> SubsonicFS<'subfs> {
     }
 
     fn add_new_artist(&mut self, mut artist: Artist) {
-        self.build_album_list(&mut artist);
+        println!("Artist: {:#?}", artist.name);
+        // self.build_album_list(&mut artist);
         artist.name = artist.name.replace("/", "-");
         self.artists.push(Rc::new(artist));
         let artist = &self.artists.last().unwrap();
@@ -113,6 +115,7 @@ impl<'subfs> SubsonicFS<'subfs> {
     }
 
     fn add_new_album(&mut self, mut album: Album) -> Rc<Album> {
+        println!("Album: {:#?}", album.name);
         self.build_song_list(&mut album);
         self.albums.push(Rc::new(album));
         let album = &self.albums.last().unwrap();
@@ -134,29 +137,29 @@ impl<'subfs> SubsonicFS<'subfs> {
         for a in artist_list {
             let artist = Artist {
                 name: a.name.clone(),
-                album_count: a.album_count,
                 sonic_artist: a,
-                albums: Vec::new(),
+                albums: RefCell::new(Vec::new()),
             };
             self.add_new_artist(artist);
         }
     }
 
-    fn build_album_list(&mut self, artist: &mut Artist) {
-        println!("Artist: {:#?}", artist.name);
+    fn build_album_list(&mut self, artist: & Artist) {
         let album_list = artist.sonic_artist.albums(&self.client).unwrap();
+        let mut albums = Vec::new();
         for a in album_list {
             let album = Album {
                 name: a.name.clone(),
                 sonic_album: a,
                 songs: Vec::new(),
             };
-            artist.albums.push(self.add_new_album(album));
+            albums.push(self.add_new_album(album));
         }
+        let mut artist_albums = artist.albums.borrow_mut();
+        *artist_albums = albums;
     }
 
     fn build_song_list(&mut self, album: &mut Album) {
-        println!("Album: {:#?}", album.name);
         let song_list = album.sonic_album.songs(&self.client).unwrap();
         for mut s in song_list {
             // s.set_max_bit_rate(128);
@@ -190,6 +193,14 @@ impl<'subfs> SubsonicFS<'subfs> {
             Some(&index) => self.songs.get(index),
             None => None,
         }
+    }
+
+    fn get_artist_albums(&mut self, artist: &Artist) -> Vec<Rc<Album>> {
+        println!("get_artist_albums: {}", artist.name);
+        if artist.albums.clone().into_inner().len() == 0 {
+            self.build_album_list(artist);
+        }
+        artist.albums.clone().into_inner()
     }
 
     fn get_artist_by_ino(&self, ino: u64) -> Option<&Rc<Artist>> {
@@ -240,7 +251,7 @@ impl<'subfs> SubsonicFS<'subfs> {
     pub fn get_artist_attr(&self, artist: &Artist) -> FileAttr {
         FileAttr {
             ino: self.get_artist_ino(&artist),
-            size: artist.album_count as u64,
+            size: artist.sonic_artist.album_count as u64,
             blocks: 0,
             atime: CREATE_TIME,
             mtime: CREATE_TIME,
@@ -316,7 +327,7 @@ impl<'subfs> SubsonicFS<'subfs> {
 
 impl<'subfs> Filesystem for SubsonicFS<'subfs> {
     fn lookup(&mut self, _req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
-        println!("lookup");
+        println!("lookup: {:?}", name);
         if parent == 1 {
             match name.to_str() {
                 Some("hello.txt") => reply.entry(&TTL, &SUBFS_TXT_ATTR, 0),
@@ -413,8 +424,8 @@ impl<'subfs> Filesystem for SubsonicFS<'subfs> {
                         (ino, FileType::Directory, "."),
                         (ARTIST_ID, FileType::Directory, ".."),
                     ];
-                    let artist = &self.get_artist_by_ino(ino).unwrap();
-                    let albums = &artist.albums;
+                    let artist = &self.get_artist_by_ino(ino).unwrap().clone();
+                    let albums = &self.get_artist_albums(artist);
                     for al in albums {
                         let i = self.get_album_index(&al);
                         let a = &self.albums[i];
