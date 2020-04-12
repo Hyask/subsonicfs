@@ -65,6 +65,7 @@ pub struct Artist {
     pub name: String,
     pub album_count: usize,
     pub sonic_artist: sunk::Artist,
+    pub albums: Vec<Rc<Album>>,
 }
 
 impl Artist {
@@ -102,20 +103,21 @@ impl<'subfs> SubsonicFS<'subfs> {
     }
 
     fn add_new_artist(&mut self, mut artist: Artist) {
+        self.build_album_list(&mut artist);
         artist.name = artist.name.replace("/", "-");
         self.artists.push(Rc::new(artist));
         let artist = &self.artists.last().unwrap();
         let name = artist.name.clone();
         self.artists_name_to_index.insert(name, self.artists.len() - 1);
-        // TODO
-        // self.build_album_list(artist);
     }
 
-    fn add_new_album(&mut self, album: Album) {
+    fn add_new_album(&mut self, album: Album) -> Rc<Album> {
         self.albums.push(Rc::new(album));
         let album = &self.albums.last().unwrap();
         let name = album.name.clone();
         self.albums_name_to_index.insert(name, self.albums.len() - 1);
+        self.albums.last().unwrap().clone()
+
         // let artist_name = &album.artist.unwrap();
         // match self.get_artist_by_name(artist_name) {
         //     Some(artist) => {
@@ -133,25 +135,26 @@ impl<'subfs> SubsonicFS<'subfs> {
                 name: a.name.clone(),
                 album_count: a.album_count,
                 sonic_artist: a,
+                albums: Vec::new(),
             };
             self.add_new_artist(artist);
         }
     }
 
-    fn build_album_list(&mut self, artist: &Artist) {
+    fn build_album_list(&mut self, artist: &mut Artist) {
+        println!("Artist: {:#?}", artist);
         let album_list = artist.sonic_artist.albums(&self.client).unwrap();
         for a in album_list {
             let album = Album {
                 name: a.name.clone(),
                 sonic_album: a,
             };
-            self.add_new_album(album);
+            artist.albums.push(self.add_new_album(album));
         }
     }
 
-    fn get_albums_for_artist(&self, artist: &Artist) -> Option<Vec<Album>> {
-        // Some(artist.sonic_artist.albums(&self.client).unwrap())
-        Some(vec![])
+    fn get_albums_for_artist(&self, artist: &'subfs Artist) -> &'subfs  Vec<Rc<Album>> {
+        &artist.albums
     }
 
     fn get_artist_list(&self) -> & Vec<Rc<Artist>> {
@@ -163,10 +166,17 @@ impl<'subfs> SubsonicFS<'subfs> {
     }
 
     fn get_artist_by_name(&self, name: &str) -> Option<&Rc<Artist>> {
-        println!("name: {}", name);
+        println!("artist name: {}", name);
         match self.artists_name_to_index.get(name) {
-            // Some(&index) => Some(*(self.artists.get(index).unwrap())),
             Some(&index) => self.artists.get(index),
+            None => None,
+        }
+    }
+
+    fn get_album_by_name(&self, name: &str) -> Option<&Rc<Album>> {
+        println!("album name: {}", name);
+        match self.albums_name_to_index.get(name) {
+            Some(&index) => self.albums.get(index),
             None => None,
         }
     }
@@ -214,6 +224,25 @@ impl<'subfs> SubsonicFS<'subfs> {
         }
     }
 
+    pub fn get_album_attr(&self, album: &Album) -> FileAttr {
+        FileAttr {
+            ino: self.get_album_ino(&album),
+            size: album.sonic_album.song_count,
+            blocks: 0,
+            atime: CREATE_TIME,
+            mtime: CREATE_TIME,
+            ctime: CREATE_TIME,
+            crtime: CREATE_TIME,
+            kind: FileType::Directory,
+            perm: 0o755,
+            nlink: 2,
+            uid: 65534, // nobody
+            gid: 65534, // nobody
+            rdev: 0,
+            flags: 0,
+        }
+    }
+
     fn get_dir_attr(&self, ino: u64) -> FileAttr {
         FileAttr {
             ino: ino,
@@ -244,10 +273,15 @@ impl<'subfs> Filesystem for SubsonicFS<'subfs> {
                 _ => reply.error(ENOENT),
             }
         } else if parent == ARTIST_ID {
-            let a = self.get_artist_by_name(&name.to_str().unwrap());
-            println!("PLOP: {:?}", a);
-            match a {
+            let ar = self.get_artist_by_name(&name.to_str().unwrap());
+            match ar {
                 Some(artist) => reply.entry(&TTL, &self.get_artist_attr(&artist), 0),
+                _ => reply.error(ENOENT),
+            }
+        } else if (parent & ARTIST_ID) == ARTIST_ID { // This is an album folder
+            let al = self.get_album_by_name(&name.to_str().unwrap());
+            match al {
+                Some(album) => reply.entry(&TTL, &self.get_album_attr(&album), 0),
                 _ => reply.error(ENOENT),
             }
         } else {
@@ -292,7 +326,6 @@ impl<'subfs> Filesystem for SubsonicFS<'subfs> {
                     let a = &self.get_artist_list()[i];
                     entries.push((self.get_artist_ino(&a), FileType::Directory, &a.name));
                 }
-                // println!("entries: {:?}", entries);
             }
             _ => {
                 if (ino & ARTIST_ID) == ARTIST_ID { // This is an artist folder
@@ -301,14 +334,18 @@ impl<'subfs> Filesystem for SubsonicFS<'subfs> {
                         (ARTIST_ID, FileType::Directory, ".."),
                     ];
                     let artist = &self.get_artist_by_ino(ino).unwrap();
-                    let albums = &self.get_albums_for_artist(&artist).unwrap();
+                    let albums = self.get_albums_for_artist(&artist);
                     for al in albums {
-                        println!("album: {:?}", al);
                         let i = self.get_album_index(&al);
                         let a = &self.get_album_list()[i];
 
                         entries.push((self.get_album_ino(&a), FileType::Directory, &a.name));
                     }
+                } else if (ino & ALBUM_ID) == ALBUM_ID { // This is an album folder
+                    entries = vec![
+                        (ino, FileType::Directory, "."),
+                        (ARTIST_ID, FileType::Directory, ".."),
+                    ];
                 } else {
                     entries = vec![];
                 }
