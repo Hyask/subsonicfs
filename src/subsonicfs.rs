@@ -2,6 +2,7 @@
 extern crate fuse;
 extern crate sunk;
 
+use std::rc::Rc;
 use libc::{ENOENT,EOF};
 use time::Timespec;
 use std::collections::HashMap;
@@ -78,9 +79,9 @@ pub struct Album {
 pub struct SubsonicFS<'subfs> {
     pub name: &'subfs str,
     pub client: sunk::Client,
-    pub artists: Vec<Artist>,
+    pub artists: Vec<Rc<Artist>>,
     pub artists_name_to_index: HashMap<String, usize>, // key is the name
-    pub albums: Vec<Album>,
+    pub albums: Vec<Rc<Album>>,
     pub albums_name_to_index: HashMap<String, usize>, // key is the name
     pub artist_ino_to_album_ino_list: HashMap<u64, Vec<u64>>,
 }
@@ -102,7 +103,7 @@ impl<'subfs> SubsonicFS<'subfs> {
 
     fn add_new_artist(&mut self, mut artist: Artist) {
         artist.name = artist.name.replace("/", "-");
-        self.artists.push(artist);
+        self.artists.push(Rc::new(artist));
         let artist = &self.artists.last().unwrap();
         let name = artist.name.clone();
         self.artists_name_to_index.insert(name, self.artists.len() - 1);
@@ -111,7 +112,7 @@ impl<'subfs> SubsonicFS<'subfs> {
     }
 
     fn add_new_album(&mut self, album: Album) {
-        self.albums.push(album);
+        self.albums.push(Rc::new(album));
         let album = &self.albums.last().unwrap();
         let name = album.name.clone();
         self.albums_name_to_index.insert(name, self.albums.len() - 1);
@@ -153,23 +154,24 @@ impl<'subfs> SubsonicFS<'subfs> {
         Some(vec![])
     }
 
-    fn get_artist_list(&self) -> & Vec<Artist> {
+    fn get_artist_list(&self) -> & Vec<Rc<Artist>> {
         &self.artists
     }
 
-    fn get_album_list(&self) -> & Vec<Album> {
+    fn get_album_list(&self) -> & Vec<Rc<Album>> {
         &self.albums
     }
 
-    fn get_artist_by_name(&self, name: &str) -> Option<&Artist> {
+    fn get_artist_by_name(&self, name: &str) -> Option<&Rc<Artist>> {
         println!("name: {}", name);
         match self.artists_name_to_index.get(name) {
+            // Some(&index) => Some(*(self.artists.get(index).unwrap())),
             Some(&index) => self.artists.get(index),
             None => None,
         }
     }
 
-    fn get_artist_by_ino(&self, ino: u64) -> Option<&Artist> {
+    fn get_artist_by_ino(&self, ino: u64) -> Option<&Rc<Artist>> {
         println!("ino: {}", ino);
         let index = ino - ARTIST_ID - 1;
         self.artists.get(index as usize)
