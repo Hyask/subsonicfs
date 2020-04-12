@@ -4,6 +4,8 @@ extern crate sunk;
 
 use std::rc::Rc;
 use std::cell::RefCell;
+use std::cell::Cell;
+use std::marker::Copy;
 use std::borrow::BorrowMut;
 use libc::{ENOENT,EOF};
 use time::Timespec;
@@ -64,17 +66,27 @@ pub struct Artist {
 impl Artist {
 }
 
-#[derive(Debug)]
+// #[derive(Debug)]
 pub struct Album {
     pub name: String,
     pub sonic_album: sunk::Album,
     pub songs: Vec<Rc<Song>>,
 }
 
-#[derive(Debug)]
+// #[derive(Debug)]
 pub struct Song {
     pub name: String,
     pub sonic_song: sunk::song::Song,
+    pub _stream: Rc<RefCell<Vec<u8>>>,
+}
+
+impl Song {
+    fn stream(&self, client: &sunk::Client) -> Vec<u8> {
+        if self._stream.borrow().len() == 0 {
+            self._stream.replace(self.sonic_song.stream(&client).unwrap());
+        }
+        self._stream.borrow().to_vec()
+    }
 }
 
 pub struct SubsonicFS<'subfs> {
@@ -166,6 +178,7 @@ impl<'subfs> SubsonicFS<'subfs> {
             let song = Song {
                 name: s.title.clone(),
                 sonic_song: s,
+                _stream: Rc::new(RefCell::new(Vec::new()))
             };
             album.songs.push(self.add_new_song(song));
         }
@@ -370,7 +383,6 @@ impl<'subfs> Filesystem for SubsonicFS<'subfs> {
             reply.data(&HELLO_TXT_CONTENT.as_bytes()[offset as usize..]);
         } else if (ino & SONG_ID) == SONG_ID { // This is a song
             let s = &self.get_song_by_ino(ino);
-            println!("Song: {:#?}", s);
             match s {
                 Some(song) => {
 
@@ -384,7 +396,7 @@ impl<'subfs> Filesystem for SubsonicFS<'subfs> {
                     if offset as usize >= song.sonic_song.size as usize {
                         reply.error(EOF);
                     } else {
-                        reply.data(&song.sonic_song.stream(&self.client).unwrap()[offset as usize..offset as usize + size as usize]);
+                        reply.data(&song.stream(&self.client)[offset as usize..offset as usize + size as usize]);
                     }
 
                 }
