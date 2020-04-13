@@ -4,9 +4,6 @@ extern crate sunk;
 
 use std::rc::Rc;
 use std::cell::RefCell;
-use std::cell::Cell;
-use std::marker::Copy;
-use std::borrow::BorrowMut;
 use libc::{ENOENT,EOF};
 use time::Timespec;
 use std::collections::HashMap;
@@ -18,9 +15,9 @@ const ARTIST_ID: u64 = 1 << 31;
 const ALBUM_ID: u64 = 1 << 32;
 const SONG_ID: u64 = 1 << 33;
 
-const TTL: Timespec = Timespec { sec: 100, nsec: 0 };                     // 100 seconds
+const TTL: Timespec = Timespec { sec: 3600, nsec: 0 };                     // 1 hour
 
-const CREATE_TIME: Timespec = Timespec { sec: 1381237736, nsec: 0 };    // 2013-10-08 08:56
+const CREATE_TIME: Timespec = Timespec { sec: 0, nsec: 0 };    // epoch
 const SUBFS_DIR_ATTR: FileAttr = FileAttr {
     ino: 1,
     size: 0,
@@ -32,24 +29,6 @@ const SUBFS_DIR_ATTR: FileAttr = FileAttr {
     kind: FileType::Directory,
     perm: 0o755,
     nlink: 2,
-    uid: 65534, // nobody
-    gid: 65534, // nobody
-    rdev: 0,
-    flags: 0,
-};
-
-const HELLO_TXT_CONTENT: &'static str = "Hello World!\n";
-const SUBFS_TXT_ATTR: FileAttr = FileAttr {
-    ino: 2,
-    size: 13,
-    blocks: 1,
-    atime: CREATE_TIME,
-    mtime: CREATE_TIME,
-    ctime: CREATE_TIME,
-    crtime: CREATE_TIME,
-    kind: FileType::RegularFile,
-    perm: 0o644,
-    nlink: 1,
     uid: 65534, // nobody
     gid: 65534, // nobody
     rdev: 0,
@@ -116,9 +95,8 @@ impl<'subfs> SubsonicFS<'subfs> {
         s
     }
 
-    fn add_new_artist(&mut self, mut artist: Artist) {
+    fn add_new_artist(&mut self, artist: Artist) {
         println!("Artist: {:#?}", artist.name);
-        // self.build_album_list(&mut artist);
         self.artists.push(Rc::new(artist));
         let artist = &self.artists.last().unwrap();
         let name = artist.name.clone();
@@ -172,7 +150,7 @@ impl<'subfs> SubsonicFS<'subfs> {
 
     fn build_song_list(&mut self, album: &mut Album) {
         let song_list = album.sonic_album.songs(&self.client).unwrap();
-        for mut s in song_list {
+        for s in song_list {
             // s.set_max_bit_rate(128);
             let song = Song {
                 name: format!("{:02} - {}.mp3", s.track.unwrap_or(0), s.title.replace("/", "\\")),
@@ -216,19 +194,16 @@ impl<'subfs> SubsonicFS<'subfs> {
     }
 
     fn get_artist_by_ino(&self, ino: u64) -> Option<&Rc<Artist>> {
-        println!("ino: {}", ino);
         let index = ino - ARTIST_ID - 1;
         self.artists.get(index as usize)
     }
 
     fn get_album_by_ino(&self, ino: u64) -> Option<&Rc<Album>> {
-        println!("ino: {}", ino);
         let index = ino - ALBUM_ID - 1;
         self.albums.get(index as usize)
     }
 
     fn get_song_by_ino(&self, ino: u64) -> Option<&Rc<Song>> {
-        println!("ino: {}", ino);
         let index = ino - SONG_ID - 1;
         self.songs.get(index as usize)
     }
@@ -342,7 +317,6 @@ impl<'subfs> Filesystem for SubsonicFS<'subfs> {
         println!("lookup: {:?}", name);
         if parent == 1 {
             match name.to_str() {
-                Some("hello.txt") => reply.entry(&TTL, &SUBFS_TXT_ATTR, 0),
                 Some("Artists") => reply.entry(&TTL, &self.get_dir_attr(ARTIST_ID), 0),
                 _ => reply.error(ENOENT),
             }
@@ -372,15 +346,12 @@ impl<'subfs> Filesystem for SubsonicFS<'subfs> {
     fn getattr(&mut self, _req: &Request, ino: u64, reply: ReplyAttr) {
         println!("getattr: {}", ino);
         if ino == 1 { reply.attr(&TTL, &SUBFS_DIR_ATTR) }
-        else if ino == 2 { reply.attr(&TTL, &SUBFS_TXT_ATTR) }
         else { reply.error(ENOENT) };
     }
 
     fn read(&mut self, _req: &Request, ino: u64, _fh: u64, offset: i64, _size: u32, reply: ReplyData) {
         println!("read - ino: {}, _fh: {}, offset: {}, _size: {}", ino, _fh, offset, _size);
-        if ino == 2 {
-            reply.data(&HELLO_TXT_CONTENT.as_bytes()[offset as usize..]);
-        } else if (ino & SONG_ID) == SONG_ID { // This is a song
+        if (ino & SONG_ID) == SONG_ID { // This is a song
             let s = &self.get_song_by_ino(ino);
             match s {
                 Some(song) => {
@@ -415,7 +386,6 @@ impl<'subfs> Filesystem for SubsonicFS<'subfs> {
                 entries = vec![
                     (1, FileType::Directory, "."),
                     (1, FileType::Directory, ".."),
-                    (2, FileType::RegularFile, "hello.txt"),
                     (ARTIST_ID, FileType::RegularFile, "Artists"),
                 ];
             }
