@@ -10,3 +10,4 @@ sunk = { git = "https://github.com/Hyask/sunk", branch = "artist_list" }
 env_logger = "0.6.0"
 time = "0.1.40"
 libc = "0.2.43"
+structopt = "0.3"
