@@ -56,7 +56,7 @@ const SUBFS_TXT_ATTR: FileAttr = FileAttr {
     flags: 0,
 };
 
-// #[derive(Debug, Clone)]
+#[derive(Debug, Clone)]
 pub struct Artist {
     pub name: String,
     pub sonic_artist: sunk::Artist,
@@ -66,14 +66,14 @@ pub struct Artist {
 impl Artist {
 }
 
-// #[derive(Debug)]
+#[derive(Debug)]
 pub struct Album {
     pub name: String,
     pub sonic_album: sunk::Album,
     pub songs: Vec<Rc<Song>>,
 }
 
-// #[derive(Debug)]
+#[derive(Debug)]
 pub struct Song {
     pub name: String,
     pub sonic_song: sunk::song::Song,
@@ -119,7 +119,6 @@ impl<'subfs> SubsonicFS<'subfs> {
     fn add_new_artist(&mut self, mut artist: Artist) {
         println!("Artist: {:#?}", artist.name);
         // self.build_album_list(&mut artist);
-        artist.name = artist.name.replace("/", "-");
         self.artists.push(Rc::new(artist));
         let artist = &self.artists.last().unwrap();
         let name = artist.name.clone();
@@ -148,7 +147,7 @@ impl<'subfs> SubsonicFS<'subfs> {
         let artist_list = sunk::Artist::list(&self.client, sunk::search::ALL).unwrap();
         for a in artist_list {
             let artist = Artist {
-                name: a.name.clone(),
+                name: a.name.clone().replace("/", "\\"),
                 sonic_artist: a,
                 albums: RefCell::new(Vec::new()),
             };
@@ -161,7 +160,7 @@ impl<'subfs> SubsonicFS<'subfs> {
         let mut albums = Vec::new();
         for a in album_list {
             let album = Album {
-                name: format!("{} - {}", a.year.unwrap_or(0), a.name),
+                name: format!("{} - {}", a.year.unwrap_or(0), a.name.replace("/", "\\")),
                 sonic_album: a,
                 songs: Vec::new(),
             };
@@ -176,7 +175,7 @@ impl<'subfs> SubsonicFS<'subfs> {
         for mut s in song_list {
             // s.set_max_bit_rate(128);
             let song = Song {
-                name: format!("{:02} - {}.mp3", s.track.unwrap_or(0), s.title),
+                name: format!("{:02} - {}.mp3", s.track.unwrap_or(0), s.title.replace("/", "\\")),
                 sonic_song: s,
                 _stream: Rc::new(RefCell::new(Vec::new()))
             };
@@ -201,7 +200,7 @@ impl<'subfs> SubsonicFS<'subfs> {
     }
 
     fn get_song_by_name(&self, name: &str) -> Option<&Rc<Song>> {
-        println!("album name: {}", name);
+        println!("song name: {}", name);
         match self.songs_name_to_index.get(name) {
             Some(&index) => self.songs.get(index),
             None => None,
@@ -210,10 +209,10 @@ impl<'subfs> SubsonicFS<'subfs> {
 
     fn get_artist_albums(&mut self, artist: &Artist) -> Vec<Rc<Album>> {
         println!("get_artist_albums: {}", artist.name);
-        if artist.albums.clone().into_inner().len() == 0 {
+        if artist.albums.borrow().len() == 0 {
             self.build_album_list(artist);
         }
-        artist.albums.clone().into_inner()
+        artist.albums.borrow().to_vec()
     }
 
     fn get_artist_by_ino(&self, ino: u64) -> Option<&Rc<Artist>> {
@@ -392,7 +391,7 @@ impl<'subfs> Filesystem for SubsonicFS<'subfs> {
                     } else {
                         size = _size as usize;
                     }
-                    println!("offset: {}, size: {}, _size: {}, song.size: {}", offset, size, _size, song.sonic_song.size);
+                    // println!("offset: {}, size: {}, _size: {}, song.size: {}", offset, size, _size, song.sonic_song.size);
                     if offset as usize >= song.sonic_song.size as usize {
                         reply.error(EOF);
                     } else {
