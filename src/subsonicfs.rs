@@ -161,7 +161,7 @@ impl<'subfs> SubsonicFS<'subfs> {
         let mut albums = Vec::new();
         for a in album_list {
             let album = Album {
-                name: a.name.clone(),
+                name: format!("{} - {}", a.year.unwrap_or(0), a.name),
                 sonic_album: a,
                 songs: Vec::new(),
             };
@@ -176,7 +176,7 @@ impl<'subfs> SubsonicFS<'subfs> {
         for mut s in song_list {
             // s.set_max_bit_rate(128);
             let song = Song {
-                name: s.title.clone(),
+                name: format!("{:02} - {}.mp3", s.track.unwrap_or(0), s.title),
                 sonic_song: s,
                 _stream: Rc::new(RefCell::new(Vec::new()))
             };
